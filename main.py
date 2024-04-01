@@ -9,18 +9,29 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from data_loader import get_dataloaders_pkl
 from data_loader import get_dataloaders
 from faceformer import Faceformer
 
 import wandb
+import pickle
+
+training_ids = ['M003', 'M005', 'M007', 'M009', 'M011', 'M012', 'M013', 'M019', 
+                'M022', 'M023', 'M024', 'M025', 'M026', 'M027', 'M028', 'M029', 
+                'M030', 'M031', 'W009', 'W011', 'W014', 'W015', 'W016', 'W018', 
+                'W019', 'W021', 'W023', 'W024', 'W025', 'W026', 'W028', 'W029'
+                ]
+device = torch.device("cuda")
 
 def trainer(args, train_loader, dev_loader, model, optimizer, criterion, epoch=100):
     save_path = os.path.join(args.dataset,args.save_path)
     if os.path.exists(save_path):
-        shutil.rmtree(save_path)
-    os.makedirs(save_path)
+        #shutil.rmtree(save_path)
+        print("exist")
+    else:
+      os.makedirs(save_path)
 
-    train_subjects_list = [i for i in args.train_subjects.split(" ")]
+    train_subjects_list = training_ids
     iteration = 0
     for e in range(epoch+1):
         loss_log = []
@@ -31,49 +42,46 @@ def trainer(args, train_loader, dev_loader, model, optimizer, criterion, epoch=1
 
         for i, (audio, vertice, template, one_hot, file_name) in pbar:
             iteration += 1
-            # to gpu
-            audio, vertice, template, one_hot  = audio.to(device="cuda"), vertice.to(device="cuda"), template.to(device="cuda"), one_hot.to(device="cuda")
-            print(file_name)
-            print(audio.shape)
-            print(template.shape)
-            print(vertice.shape)
-            #if shape is not (1,32)
-            #one_hot = one_hot.squeeze(dim=1)
-            print(one_hot.shape)
-            loss = model(audio, template,  vertice, one_hot, criterion,teacher_forcing=False)
-            loss.backward()
-            loss_log.append(loss.item())
-            if i % args.gradient_accumulation_steps==0:
-                optimizer.step()
-                optimizer.zero_grad()
+            if i < len(pbar) - 1:
+              # to gpu
+              audio, vertice, template, one_hot  = audio.to(device), vertice.to(device), template.to(device), one_hot.to(device)
+              loss = model(audio, template, vertice, one_hot, criterion, teacher_forcing=False)
+              loss.backward()
+              loss_log.append(loss.item())
+              if i % args.gradient_accumulation_steps==0:
+                  optimizer.step()
+                  optimizer.zero_grad()
 
-            pbar.set_description("(Epoch {}, iteration {}) TRAIN LOSS:{:.7f}".format((e+1), iteration ,np.mean(loss_log)))
-            wandb.log({"Train_Loss": np.mean(loss_log)})
+              torch.autograd.set_detect_anomaly(True)
+              pbar.set_description("(Epoch {}, iteration {}) TRAIN LOSS:{:.7f}".format((e+1), iteration ,np.mean(loss_log)))
+              wandb.log({"Epoch": (e+1), "Train_Loss": np.mean(loss_log)})
         # validation
         valid_loss_log = []
         model.eval()
         for audio, vertice, template, one_hot_all,file_name in dev_loader:
             # to gpu
-            audio, vertice, template, one_hot_all= audio.to(device="cuda"), vertice.to(device="cuda"), template.to(device="cuda"), one_hot_all.to(device="cuda")
+            audio, vertice, template, one_hot_all= audio.to(device), vertice.to(device), template.to(device), one_hot_all.to(device)
             train_subject = "_".join(file_name[0].split("_")[:-1])
             if train_subject in train_subjects_list:
                 condition_subject = train_subject
                 iter = train_subjects_list.index(condition_subject)
                 one_hot = one_hot_all[:,iter,:]
-                loss = model(audio, template,  vertice, one_hot, criterion)
+                loss = model(audio, template, vertice, one_hot, criterion)
                 valid_loss_log.append(loss.item())
             else:
                 for iter in range(one_hot_all.shape[-1]):
                     condition_subject = train_subjects_list[iter]
                     one_hot = one_hot_all[:,iter,:]
-                    loss = model(audio, template,  vertice, one_hot, criterion)
+                    loss = model(audio, template, vertice, one_hot, criterion)
                     valid_loss_log.append(loss.item())
                         
+            wandb.log({"Valid_Loss": np.mean(valid_loss_log)})
+                        
         current_loss = np.mean(valid_loss_log)
-        wandb.log({"Valid_Loss": current_loss})
         
-        if (e > 0 and e % 25 == 0) or e == args.max_epoch:
-            torch.save(model.state_dict(), os.path.join(save_path,'{}_model.pth'.format(e)))
+        #if (e > 0 and e % 25 == 0) or e == args.max_epoch:
+        #if (e > 0 and e % epoch == 0) or e == args.max_epoch:
+        torch.save(model.state_dict(), os.path.join(save_path,'{}_model.pth'.format(e)))
 
         print("epcoh: {}, current loss:{:.7f}".format(e+1,current_loss))    
     return model
@@ -86,16 +94,16 @@ def test(args, model, test_loader,epoch):
     os.makedirs(result_path)
 
     save_path = os.path.join(args.dataset,args.save_path)
-    train_subjects_list = [i for i in args.train_subjects.split(" ")]
+    train_subjects_list = training_ids
 
     model.load_state_dict(torch.load(os.path.join(save_path, '{}_model.pth'.format(epoch))))
-    model = model.to(torch.device("cuda"))
+    model = model.to(device)
     model.eval()
    
     for audio, vertice, template, one_hot_all, file_name in test_loader:
         # to gpu
-        audio, vertice, template, one_hot_all= audio.to(device="cuda"), vertice.to(device="cuda"), template.to(device="cuda"), one_hot_all.to(device="cuda")
-        train_subject = "_".join(file_name[0].split("_")[:-1])
+        audio, vertice, template, one_hot_all= audio.to(device), vertice.to(device), template.to(device), one_hot_all.to(device)
+        train_subject = file_name[0].split("_")[0]
         if train_subject in train_subjects_list:
             condition_subject = train_subject
             iter = train_subjects_list.index(condition_subject)
@@ -137,6 +145,7 @@ def main():
        " FaceTalk_170908_03277_TA")
     parser.add_argument("--test_subjects", type=str, default="FaceTalk_170809_00138_TA"
        " FaceTalk_170731_00024_TA")
+    parser.add_argument("--batch_size", type=int, default=1)
     args = parser.parse_args()
 
     wandb.init(project='FaceFormer', entity='mesh_talk')
@@ -148,15 +157,67 @@ def main():
 
     # to cuda
     assert torch.cuda.is_available()
-    model = model.to(torch.device("cuda"))
+    model = model.to(device)
+    
+    device_count = torch.cuda.device_count()
+    
+    model = model.to(device)
     
     #load data
-    dataset = get_dataloaders(args)
+    #dataset = get_dataloaders(args)
     
     # if dataset is already loaded
-    # dataset_path = "/home/smsm0307/FaceFormer-main/dataset.pkl"
-    # with open(dataset_path, 'rb') as file:
-    #     dataset = pickle.load(file)
+    if args.batch_size == 1:
+      train_data_path = "/scratch/smsm0307/dataset/train_data.pkl"
+      if os.path.exists(train_data_path):
+          with open(train_data_path, 'rb') as file:
+            train_data = pickle.load(file)
+      else:
+          with open(train_data_path, 'wb') as file:
+            pickle.dump(train_data, file)
+      
+      valid_data_path = "/scratch/smsm0307/dataset/valid_data.pkl"
+      if os.path.exists(valid_data_path):
+          with open(valid_data_path, 'rb') as file:
+            valid_data = pickle.load(file)
+      else:
+          with open(valid_data_path, 'wb') as file:
+            pickle.dump(valid_data, file)
+     
+      test_data_path = "/scratch/smsm0307/dataset/test_data.pkl"
+      if os.path.exists(test_data_path):
+          with open(test_data_path, 'rb') as file:
+            test_data = pickle.load(file)
+      else:
+          with open(test_data_path, 'wb') as file:
+            pickle.dump(test_data, file)
+            
+    elif args.batch_size >= 2:
+      train_data_path = "/scratch/smsm0307/dataset/2sec_train_data.pkl"
+      if os.path.exists(train_data_path):
+        with open(train_data_path, 'rb') as file:
+          train_data = pickle.load(file)
+      else:
+        with open(train_data_path, 'wb') as file:
+          pickle.dump(train_data, file)
+      
+      valid_data_path = "/scratch/smsm0307/dataset/2sec_valid_data.pkl"
+      if os.path.exists(valid_data_path):
+        with open(valid_data_path, 'rb') as file:
+          valid_data = pickle.load(file)
+      else:
+        with open(valid_data_path, 'wb') as file:
+          pickle.dump(valid_data, file)
+      
+      test_data_path = "/scratch/smsm0307/dataset/2sec_test_data.pkl"
+      if os.path.exists(test_data_path):
+        with open(test_data_path, 'rb') as file:
+          test_data = pickle.load(file)
+      else:
+        with open(test_data_path, 'wb') as file:
+          pickle.dump(test_data, file)
+        
+    dataset = get_dataloaders_pkl(train_data, valid_data, test_data, args.batch_size)
     
     # loss
     criterion = nn.MSELoss()
@@ -167,8 +228,10 @@ def main():
     wandb.watch(model, criterion, log="all", log_freq=10)
     
     model = trainer(args, dataset["train"], dataset["valid"],model, optimizer, criterion, epoch=args.max_epoch)
+    #model = trainer(args, dataset["train"], dataset["valid"],model, optimizer, criterion, epoch=10)
     
-#    test(args, model, dataset["test"], epoch=args.max_epoch)
+    #test(args, model, dataset["test"], epoch=args.max_epoch)
+    wandb.finish()
     
 if __name__=="__main__":
     main()
