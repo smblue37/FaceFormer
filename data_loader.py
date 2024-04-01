@@ -40,33 +40,20 @@ class Dataset(data.Dataset):
         self.len = len(self.data)
         self.subjects_dict = subjects_dict
         self.data_type = data_type
-        #self.one_hot_labels = np.eye(len(subjects_dict["train"]))
         self.one_hot_labels = np.eye(len(subjects_dict["train"]))
 
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
         # seq_len, fea_dim
         file_name = self.data[index]["name"]
-        #print(file_name)
         audio = self.data[index]["audio"]
-        #print("audio")
-        #print(audio.shape)
         vertice = self.data[index]["vertice"]
-        print("vertice")
-        print(vertice.shape)
         template = self.data[index]["template"]
-        #print("template")
-        #print(template.shape)
         if self.data_type == "train":
-            #subject = "_".join(file_name.split("_")[:-1])
             subject = file_name.split("_")[0]
             one_hot = self.one_hot_labels[self.subjects_dict["train"].index(subject)]
-            #check shape of one_hot
-            #one_hot = one_hot.reshape((1,len(self.subjects_dict["train"])))
         else:
             one_hot = self.one_hot_labels
-        #print(one_hot)
-        #print(one_hot.shape)
             
         return torch.FloatTensor(audio),torch.FloatTensor(vertice), torch.FloatTensor(template), torch.FloatTensor(one_hot), file_name
 
@@ -82,15 +69,16 @@ def read_data(args):
     
     audio_path = args.wav_path
     vertices_path = args.vertices_path
+    processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
 
     template_file = os.path.join(args.dataset, args.template_file)
-    print(template_file)
     with open(template_file, 'rb') as fin:
         templates = pickle.load(fin,encoding='latin1')
-        print("here")
     
     
-    if args.dataset == 'MEAD':        
+    if args.dataset == 'MEAD': 
+      audio_only = {}
+           
       # training set
       train_file_paths = []
       for training_id in training_ids:
@@ -99,31 +87,35 @@ def read_data(args):
       for file_path in tqdm(train_file_paths):
         uid = file_path.split('/')[-1].split('.')[0]
         actor_name = uid.split('_')[0] # M005
-        # if args.split == 'train' :
-        #     actor_id = MEAD_ACTOR_DICT[actor_name] # name -> id
-        # ########################## set 01 for all val dataset
-        # else :
-        #     actor_id = 1
-        # # actor_id = 1
-        # # modify to match inferno emotion label
-        # # emotion = int(uid.split('_')[1])
-        # emotion = modify_DICT[int(uid.split('_')[1])]
-        # intensity = int(uid.split("_")[2])
-        # gender = GENDER_DICT[uid.split('_')[0][0]] # M -> 0, W -> 1
+        emotion_num = int(uid.split('_')[1])
+        for key, value in EMOTION_DICT.items():
+          if value == emotion_num:
+            emotion_str = key
+            break
+        level_str = "level_" + uid.split('_')[2]
+        audio_file_name = file_path.split('/')[-1].split('_')[-1].replace('npy', 'wav')
+        base_path = "/home/MIR_LAB/MEAD/audio"
+        audio_path = os.path.join(base_path, actor_name, "video", "front", emotion_str, level_str, audio_file_name)
         
-        audio_sample_path = file_path.replace("vertices", "audio_sample")
-        if os.path.exists(audio_sample_path):
+        #audio_sample_path = file_path.replace("vertices", "audio_sample")
+        
+        if os.path.exists(audio_path):
+            speech_array, sampling_rate = librosa.load(audio_path, sr=16000)
+            input_values = np.squeeze(processor(speech_array,sampling_rate=16000).input_values)
+            audio_only[uid] = {"audio": input_values}
+        
+            if args.batch_size == 1:
+              data[uid]["audio"] = input_values
+              data[uid]["vertice"] = np.load(file_path, allow_pickle=True).reshape((-1,5023*3))
+            elif args.batch_size >= 2:
+              data[uid]["vertice"] = slice_vertices(np.load(file_path, allow_pickle=True).reshape((-1,5023*3)), templates.reshape((-1)))
+              data[uid]["audio"] = slice_audio(input_values)
+            
             data[uid]["name"] = file_path.split('/')[-1]
-            #data[uid]["vertice"] = np.load(file_path, allow_pickle=True)
-            data[uid]["vertice"] = np.load(file_path, allow_pickle=True).reshape((-1,5023*3))
-            #temp_calcul = np.prod(np.load(file_path, allow_pickle=True).shape) // 15069
-            #data[uid]["vertice"] = np.load(file_path, allow_pickle=True).reshape((temp_calcul,15069))
-            data[uid]["audio"] = np.load(file_path.replace("vertices", "audio_sample"))
-            #data[uid]["audio"] = np.load(file_path.replace("vertices", "audio_sample")).reshape((1,-1))
             data[uid]["template"] = templates.reshape((-1))
-            #data[uid]["template"] = (templates.reshape((-1))).reshape((1,-1))
             
             train_data.append(data[uid])
+            
         
       # val set
       val_file_paths = []
@@ -133,29 +125,32 @@ def read_data(args):
       for file_path in tqdm(val_file_paths):
         uid = file_path.split('/')[-1].split('.')[0]
         actor_name = uid.split('_')[0] # M005
-        # if args.split == 'train' :
-        #     actor_id = MEAD_ACTOR_DICT[actor_name] # name -> id
-        # ########################## set 01 for all val dataset
-        # else :
-        #     actor_id = 1
-        # # actor_id = 1
-        # # modify to match inferno emotion label
-        # # emotion = int(uid.split('_')[1])
-        # emotion = modify_DICT[int(uid.split('_')[1])]
-        # intensity = int(uid.split("_")[2])
-        # gender = GENDER_DICT[uid.split('_')[0][0]] # M -> 0, W -> 1
+        emotion_num = int(uid.split('_')[1])
+        for key, value in EMOTION_DICT.items():
+          if value == emotion_num:
+            emotion_str = key
+            break
+        level_str = "level_" + uid.split('_')[2]
+        audio_file_name = file_path.split('/')[-1].split('_')[-1].replace('npy', 'wav')
+        base_path = "/home/MIR_LAB/MEAD/audio"
+        audio_path = os.path.join(base_path, actor_name, "video", "front", emotion_str, level_str, audio_file_name)
         
-        audio_sample_path = file_path.replace("vertices", "audio_sample")
-        if os.path.exists(audio_sample_path):
+        #audio_sample_path = file_path.replace("vertices", "audio_sample")
+        
+        if os.path.exists(audio_path):
+            speech_array, sampling_rate = librosa.load(audio_path, sr=16000)
+            input_values = np.squeeze(processor(speech_array,sampling_rate=16000).input_values)
+            audio_only[uid] = {"audio": input_values}
+        
+            if args.batch_size == 1:
+              data[uid]["audio"] = input_values
+              data[uid]["vertice"] = np.load(file_path, allow_pickle=True).reshape((-1,5023*3))
+            elif args.batch_size >= 2:
+              data[uid]["vertice"] = slice_vertices(np.load(file_path, allow_pickle=True).reshape((-1,5023*3)), templates.reshape((-1)))
+              data[uid]["audio"] = slice_audio(input_values)
+        
             data[uid]["name"] = file_path.split('/')[-1]
-            #data[uid]["vertice"] = np.load(file_path, allow_pickle=True)
-            data[uid]["vertice"] = np.load(file_path, allow_pickle=True).reshape((-1,5023*3))
-            #temp_calcul = np.prod(np.load(file_path, allow_pickle=True).shape) // 15069
-            #data[uid]["vertice"] = np.load(file_path, allow_pickle=True).reshape((temp_calcul,15069))
-            data[uid]["audio"] = np.load(file_path.replace("vertices", "audio_sample"))
-            #data[uid]["audio"] = np.load(file_path.replace("vertices", "audio_sample")).reshape((1,-1))
             data[uid]["template"] = templates.reshape((-1))
-            #data[uid]["template"] = (templates.reshape((-1))).reshape((1,-1))
             
             valid_data.append(data[uid])
         
@@ -167,39 +162,43 @@ def read_data(args):
       for file_path in tqdm(test_file_paths):
         uid = file_path.split('/')[-1].split('.')[0]
         actor_name = uid.split('_')[0] # M005
-        # if args.split == 'train' :
-        #     actor_id = MEAD_ACTOR_DICT[actor_name] # name -> id
-        # ########################## set 01 for all val dataset
-        # else :
-        #     actor_id = 1
-        # # actor_id = 1
-        # # modify to match inferno emotion label
-        # # emotion = int(uid.split('_')[1])
-        # emotion = modify_DICT[int(uid.split('_')[1])]
-        # intensity = int(uid.split("_")[2])
-        # gender = GENDER_DICT[uid.split('_')[0][0]] # M -> 0, W -> 1
+        emotion_num = int(uid.split('_')[1])
+        for key, value in EMOTION_DICT.items():
+          if value == emotion_num:
+            emotion_str = key
+            break
+        level_str = "level_" + uid.split('_')[2]
+        audio_file_name = file_path.split('/')[-1].split('_')[-1].replace('npy', 'wav')
+        base_path = "/home/MIR_LAB/MEAD/audio"
+        audio_path = os.path.join(base_path, actor_name, "video", "front", emotion_str, level_str, audio_file_name)
         
-        audio_sample_path = file_path.replace("vertices", "audio_sample")
-        if os.path.exists(audio_sample_path):
+        #audio_sample_path = file_path.replace("vertices", "audio_sample")
+        
+        if os.path.exists(audio_path):
+            speech_array, sampling_rate = librosa.load(audio_path, sr=16000)
+            input_values = np.squeeze(processor(speech_array,sampling_rate=16000).input_values)
+            audio_only[uid] = {"audio": input_values}
+        
+            if args.batch_size == 1:
+              data[uid]["audio"] = input_values
+              data[uid]["vertice"] = np.load(file_path, allow_pickle=True).reshape((-1,5023*3))
+            elif args.batch_size >= 2:
+              data[uid]["vertice"] = slice_vertices(np.load(file_path, allow_pickle=True).reshape((-1,5023*3)), templates.reshape((-1)))
+              data[uid]["audio"] = slice_audio(input_values)
+        
             data[uid]["name"] = file_path.split('/')[-1]
-            #data[uid]["vertice"] = np.load(file_path, allow_pickle=True)
-            data[uid]["vertice"] = np.load(file_path, allow_pickle=True).reshape((-1,5023*3))
-            #temp_calcul = np.prod(np.load(file_path, allow_pickle=True).shape) // 15069
-            #data[uid]["vertice"] = np.load(file_path, allow_pickle=True).reshape((temp_calcul,15069))
-            data[uid]["audio"] = np.load(file_path.replace("vertices", "audio_sample"))
-            #data[uid]["audio"] = np.load(file_path.replace("vertices", "audio_sample")).reshape((1,-1))
             data[uid]["template"] = templates.reshape((-1))
-            #data[uid]["template"] = (templates.reshape((-1))).reshape((1,-1))
             
             test_data.append(data[uid])
 
       subjects_dict = {}
-      #subjects_dict["train"] = [i for i in args.train_subjects.split(" ")]
-      #subjects_dict["val"] = [i for i in args.val_subjects.split(" ")]
-      #subjects_dict["test"] = [i for i in args.test_subjects.split(" ")]
       subjects_dict["train"] = training_ids
       subjects_dict["val"] = val_ids
       subjects_dict["test"] = test_ids
+      
+      audio_pkl_name = "/scratch/smsm0307/dataset/processed_audio.pkl"
+      with open(audio_pkl_name, "wb") as f:
+        pickle.dump(audio_only, f)
 
     splits = {'vocaset':{'train':range(1,41),'val':range(21,41),'test':range(21,41)},
      'BIWI':{'train':range(1,33),'val':range(33,37),'test':range(37,41)}}
@@ -208,22 +207,103 @@ def read_data(args):
     return train_data, valid_data, test_data, subjects_dict
 
 def get_dataloaders(args):
-    dataset = {}
+    dataset = {}  
     train_data, valid_data, test_data, subjects_dict = read_data(args)
     train_data = Dataset(train_data,subjects_dict,"train")
-    dataset["train"] = data.DataLoader(dataset=train_data, batch_size=1, shuffle=True)
-    print(dataset["train"])
     valid_data = Dataset(valid_data,subjects_dict,"val")
-    dataset["valid"] = data.DataLoader(dataset=valid_data, batch_size=1, shuffle=False)
     test_data = Dataset(test_data,subjects_dict,"test")
-    dataset["test"] = data.DataLoader(dataset=test_data, batch_size=1, shuffle=False)
     
-    #dataset_path = "/home/smsm0307/FaceFormer-main/dataset.pkl"
-    #with open(dataset_path, 'wb') as file:
-    #    pickle.dump(dataset, file)
+    if args.batch_size == 1:
+      train_data_path = "/scratch/smsm0307/dataset/train_data.pkl"
+      if os.path.exists(train_data_path):
+        with open(train_data_path, 'rb') as file:
+          train_data = pickle.load(file)
+      else:
+        with open(train_data_path, 'wb') as file:
+          pickle.dump(train_data, file)
+      
+      valid_data_path = "/scratch/smsm0307/dataset/valid_data.pkl"
+      if os.path.exists(valid_data_path):
+        with open(valid_data_path, 'rb') as file:
+          valid_data = pickle.load(file)
+      else:
+        with open(valid_data_path, 'wb') as file:
+          pickle.dump(valid_data, file)
+      
+      test_data_path = "/scratch/smsm0307/dataset/test_data.pkl"
+      if os.path.exists(test_data_path):
+        with open(test_data_path, 'rb') as file:
+          test_data = pickle.load(file)
+      else:
+        with open(test_data_path, 'wb') as file:
+          pickle.dump(test_data, file)
+          
+    elif args.batch_size >= 2:
+      train_data_path = "/scratch/smsm0307/dataset/2sec_train_data.pkl"
+      if os.path.exists(train_data_path):
+        with open(train_data_path, 'rb') as file:
+          train_data = pickle.load(file)
+      else:
+        with open(train_data_path, 'wb') as file:
+          pickle.dump(train_data, file)
+      
+      valid_data_path = "/scratch/smsm0307/dataset/2sec_valid_data.pkl"
+      if os.path.exists(valid_data_path):
+        with open(valid_data_path, 'rb') as file:
+          valid_data = pickle.load(file)
+      else:
+        with open(valid_data_path, 'wb') as file:
+          pickle.dump(valid_data, file)
+      
+      test_data_path = "/scratch/smsm0307/dataset/2sec_test_data.pkl"
+      if os.path.exists(test_data_path):
+        with open(test_data_path, 'rb') as file:
+          test_data = pickle.load(file)
+      else:
+        with open(test_data_path, 'wb') as file:
+          pickle.dump(test_data, file)
     
-    print("finally...")
+    dataset["train"] = data.DataLoader(dataset=train_data, batch_size=args.batch_size, shuffle=True)
+    dataset["valid"] = data.DataLoader(dataset=valid_data, batch_size=args.batch_size, shuffle=False)
+    dataset["test"] = data.DataLoader(dataset=test_data, batch_size=args.batch_size, shuffle=False)
+    
     return dataset
+    
+def get_dataloaders_pkl(train_data, valid_data, test_data, bs):
+    dataset = {}  
+    dataset["train"] = data.DataLoader(dataset=train_data, batch_size=bs, shuffle=True)
+    dataset["valid"] = data.DataLoader(dataset=valid_data, batch_size=bs, shuffle=False)
+    dataset["test"] = data.DataLoader(dataset=test_data, batch_size=bs, shuffle=False)
+    
+    return dataset
+
+def slice_audio(audio):
+  audio_size = audio.shape[0];
+  if audio_size < 6400:
+    new_audio = np.zeros(32000-6400)
+  elif audio_size >= 6400 and audio_size < 32000:
+    temp_audio = np.zeros(32000)
+    temp_audio[:audio_size] = audio
+    new_audio = temp_audio[6400:32000]
+  elif audio_size > 32000:
+    new_audio = audio[6400:32000]
+    
+  return new_audio
+
+
+def slice_vertices(vertice, template):
+  template = np.array(template)
+  if vertice.shape[0] < 10:
+    new_vertice = np.tile(template, (50, 1))
+  elif vertice.shape[0] >= 10 and vertice.shape[0] < 60:
+    temp_list = np.tile(template, (60, 1))
+    temp_list[:vertice.shape[0], :] = vertice
+    new_vertice = temp_list[10:60, :]
+  elif vertice.shape[0] >= 60:
+    new_vertice = vertice[10:60, :]
+    
+  return new_vertice
 
 if __name__ == "__main__":
     get_dataloaders()
+    
