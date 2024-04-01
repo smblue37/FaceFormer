@@ -7,7 +7,7 @@ import math
 from wav2vec import Wav2Vec2Model
 
 # Temporal Bias, inspired by ALiBi: https://github.com/ofirpress/attention_with_linear_biases
-def init_biased_mask(n_head, max_seq_len, period):
+def init_biased_mask(n_head, max_seq_len, period, batch_size):
     def get_slopes(n):
         def get_slopes_power_of_2(n):
             start = (2**(-2**-(math.log2(n)-3)))
@@ -18,27 +18,33 @@ def init_biased_mask(n_head, max_seq_len, period):
         else:                                                 
             closest_power_of_2 = 2**math.floor(math.log2(n)) 
             return get_slopes_power_of_2(closest_power_of_2) + get_slopes(2*closest_power_of_2)[0::2][:n-closest_power_of_2]
-    slopes = torch.Tensor(get_slopes(n_head))
+    slopes = torch.Tensor(get_slopes(n_head*batch_size))
     bias = torch.arange(start=0, end=max_seq_len, step=period).unsqueeze(1).repeat(1,period).view(-1)//(period)
     bias = - torch.flip(bias,dims=[0])
+    
+    print(slopes.shape)
+    
     alibi = torch.zeros(max_seq_len, max_seq_len)
     for i in range(max_seq_len):
         alibi[i, :i+1] = bias[-(i+1):]
+          
     alibi = slopes.unsqueeze(1).unsqueeze(1) * alibi.unsqueeze(0)
     mask = (torch.triu(torch.ones(max_seq_len, max_seq_len)) == 1).transpose(0, 1)
     mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
     mask = mask.unsqueeze(0) + alibi
+    print("mask")
+    print(mask.shape)
     return mask
 
 # Alignment Bias
-def enc_dec_mask(device, dataset, T, S):
-    mask = torch.ones(T, S)
-    if dataset == "BIWI":
+def enc_dec_mask(device, dataset, T, S, batch_size):
+    mask = torch.ones(batch_size, T, S)
+    if dataset == "BIWI" or dataset == "MEAD":
         for i in range(T):
-            mask[i, i*2:i*2+2] = 0
+            mask[:, i, i*2:i*2+2] = 0
     elif dataset == "vocaset":
         for i in range(T):
-            mask[i, i] = 0
+            mask[:, i, i] = 0
     return (mask==1).to(device=device)
 
 # Periodic Positional Encoding
@@ -78,7 +84,8 @@ class Faceformer(nn.Module):
         # periodic positional encoding 
         self.PPE = PeriodicPositionalEncoding(args.feature_dim, period = args.period)
         # temporal bias
-        self.biased_mask = init_biased_mask(n_head = 4, max_seq_len = 600, period=args.period)
+        self.biased_mask = init_biased_mask(n_head = 4, max_seq_len = 600, period=args.period, batch_size=args.batch_size)
+        #self.biased_mask = init_biased_mask(4*args.batch_size, max_seq_len = 600, period=args.period)
         decoder_layer = nn.TransformerDecoderLayer(d_model=args.feature_dim, nhead=4, dim_feedforward=2*args.feature_dim, batch_first=True)        
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=1)
         # motion decoder
@@ -89,32 +96,27 @@ class Faceformer(nn.Module):
         else:
           self.obj_vector = nn.Linear(len(args.train_subjects.split()), args.feature_dim, bias=False)
         self.device = args.device
+        self.batch_size = args.batch_size
         nn.init.constant_(self.vertice_map_r.weight, 0)
         nn.init.constant_(self.vertice_map_r.bias, 0)
 
-    def forward(self, audio, template, vertice, one_hot, criterion,teacher_forcing=True):
+    def forward(self, audio, template, vertice, one_hot, criterion, teacher_forcing=True):
         # tgt_mask: :math:`(T, T)`.
         # memory_mask: :math:`(T, S)`.
-        template = template.unsqueeze(1) # (1,1, V*3)
-        print(one_hot.shape)
-        print(self.obj_vector.in_features)
-        obj_embedding = self.obj_vector(one_hot)#(1, feature_dim)
-        print(obj_embedding.shape)
         
-        #self.audio_feature_map = nn.Linear(audio.shape[1], self.feature_dim)
-        print("audio feature map in features")
-        print(self.audio_feature_map.in_features)
-        print("audio feature map out features")
-        print(self.audio_feature_map.out_features)
+        print("template shape")
+        print(template.shape)
+        template = template.unsqueeze(1) # (32,1, V*3)
+        obj_embedding = self.obj_vector(one_hot)#(32, feature_dim)
+        print(obj_embedding.shape)
         
         frame_num = vertice.shape[1]
         hidden_states = self.audio_encoder(audio, self.dataset, frame_num=frame_num).last_hidden_state
-        if self.dataset == "BIWI":
+        if self.dataset == "BIWI" or self.dataset == "MEAD":
             if hidden_states.shape[1]<frame_num*2:
                 vertice = vertice[:, :hidden_states.shape[1]//2]
                 frame_num = hidden_states.shape[1]//2
         hidden_states = self.audio_feature_map(hidden_states)
-        #hidden_states = self.audio_feature_map(audio)
 
         if teacher_forcing:
             vertice_emb = obj_embedding.unsqueeze(1) # (1,1,feature_dim)
@@ -131,14 +133,21 @@ class Faceformer(nn.Module):
         else:
             for i in range(frame_num):
                 if i==0:
-                    vertice_emb = obj_embedding.unsqueeze(1) # (1,1,feature_dim)
+                    vertice_emb = obj_embedding.unsqueeze(1) # (32,1,feature_dim)
                     style_emb = vertice_emb
                     vertice_input = self.PPE(style_emb)
                 else:
                     vertice_input = self.PPE(vertice_emb)
+                print("vertice input")
+                print(vertice_input.shape) #(32, 1, feature_dim)
                 tgt_mask = self.biased_mask[:, :vertice_input.shape[1], :vertice_input.shape[1]].clone().detach().to(device=self.device)
-                memory_mask = enc_dec_mask(self.device, self.dataset, vertice_input.shape[1], hidden_states.shape[1])
+                print("tgt")
+                print(tgt_mask.shape) 
+                memory_mask = enc_dec_mask(self.device, self.dataset, vertice_input.shape[1], hidden_states.shape[1], self.batch_size * 4)
+                print("memory")
+                print(memory_mask.shape)
                 vertice_out = self.transformer_decoder(vertice_input, hidden_states, tgt_mask=tgt_mask, memory_mask=memory_mask)
+                torch.autograd.set_detect_anomaly(True)
                 vertice_out = self.vertice_map_r(vertice_out)
                 new_output = self.vertice_map(vertice_out[:,-1,:]).unsqueeze(1)
                 new_output = new_output + style_emb
@@ -153,15 +162,13 @@ class Faceformer(nn.Module):
         template = template.unsqueeze(1) # (1,1, V*3)
         obj_embedding = self.obj_vector(one_hot)
         hidden_states = self.audio_encoder(audio, self.dataset).last_hidden_state
-        #self.audio_feature_mape = nn.Linear(audio.shape[1], self.feature_dim)
         if self.dataset == "BIWI":
             frame_num = hidden_states.shape[1]//2
         elif self.dataset == "vocaset":
             frame_num = hidden_states.shape[1]
         elif self.dataset == "MEAD":
-            frame_num = audio.shape[1]
-        #hidden_states = self.audio_feature_map(hidden_states)
-        hidden_states = self.audio_feature_map(audio)
+            frame_num = hidden_states.shape[1]
+        hidden_states = self.audio_feature_map(hidden_states)
 
         for i in range(frame_num):
             if i==0:
@@ -172,7 +179,7 @@ class Faceformer(nn.Module):
                 vertice_input = self.PPE(vertice_emb)
 
             tgt_mask = self.biased_mask[:, :vertice_input.shape[1], :vertice_input.shape[1]].clone().detach().to(device=self.device)
-            memory_mask = enc_dec_mask(self.device, self.dataset, vertice_input.shape[1], hidden_states.shape[1])
+            memory_mask = enc_dec_mask(self.device, self.dataset, vertice_input.shape[1], hidden_states.shape[1], batch_size)
             vertice_out = self.transformer_decoder(vertice_input, hidden_states, tgt_mask=tgt_mask, memory_mask=memory_mask)
             vertice_out = self.vertice_map_r(vertice_out)
             new_output = self.vertice_map(vertice_out[:,-1,:]).unsqueeze(1)
