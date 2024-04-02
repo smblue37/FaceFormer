@@ -54,28 +54,32 @@ def trainer(args, train_loader, dev_loader, model, optimizer, criterion, epoch=1
 
               torch.autograd.set_detect_anomaly(True)
               pbar.set_description("(Epoch {}, iteration {}) TRAIN LOSS:{:.7f}".format((e+1), iteration ,np.mean(loss_log)))
-              wandb.log({"Epoch": (e+1), "Train_Loss": np.mean(loss_log)})
+              #wandb.log({"Epoch": (e+1), "BS_1_Train_Loss": np.mean(loss_log)})
+              wandb.log({"Epoch": (e+1), "BS_32_Train_Loss": np.mean(loss_log)})
         # validation
         valid_loss_log = []
         model.eval()
-        for audio, vertice, template, one_hot_all,file_name in dev_loader:
-            # to gpu
-            audio, vertice, template, one_hot_all= audio.to(device), vertice.to(device), template.to(device), one_hot_all.to(device)
-            train_subject = "_".join(file_name[0].split("_")[:-1])
-            if train_subject in train_subjects_list:
-                condition_subject = train_subject
-                iter = train_subjects_list.index(condition_subject)
-                one_hot = one_hot_all[:,iter,:]
-                loss = model(audio, template, vertice, one_hot, criterion)
-                valid_loss_log.append(loss.item())
-            else:
-                for iter in range(one_hot_all.shape[-1]):
-                    condition_subject = train_subjects_list[iter]
-                    one_hot = one_hot_all[:,iter,:]
-                    loss = model(audio, template, vertice, one_hot, criterion)
-                    valid_loss_log.append(loss.item())
-                        
-            wandb.log({"Valid_Loss": np.mean(valid_loss_log)})
+        pbar2 = tqdm(enumerate(dev_loader),total=len(dev_loader))
+        for i, (audio, vertice, template, one_hot_all,file_name) in pbar2:
+            if i < len(pbar2) - 1:
+              # to gpu
+              audio, vertice, template, one_hot_all= audio.to(device), vertice.to(device), template.to(device), one_hot_all.to(device)
+              train_subject = "_".join(file_name[0].split("_")[:-1])
+              if train_subject in train_subjects_list:
+                  condition_subject = train_subject
+                  iter = train_subjects_list.index(condition_subject)
+                  one_hot = one_hot_all[:,iter,:]
+                  loss = model(audio, template, vertice, one_hot, criterion)
+                  valid_loss_log.append(loss.item())
+              else:
+                  for iter in range(one_hot_all.shape[-1]):
+                      condition_subject = train_subjects_list[iter]
+                      one_hot = one_hot_all[:,iter,:]
+                      loss = model(audio, template, vertice, one_hot, criterion)
+                      valid_loss_log.append(loss.item())
+                          
+              #wandb.log({"BS_1_Valid_Loss": np.mean(valid_loss_log)})
+              wandb.log({"BS_32_Valid_Loss": np.mean(valid_loss_log)})
                         
         current_loss = np.mean(valid_loss_log)
         
@@ -89,9 +93,10 @@ def trainer(args, train_loader, dev_loader, model, optimizer, criterion, epoch=1
 @torch.no_grad()
 def test(args, model, test_loader,epoch):
     result_path = os.path.join(args.dataset,args.result_path)
-    if os.path.exists(result_path):
-        shutil.rmtree(result_path)
-    os.makedirs(result_path)
+    #if os.path.exists(result_path):
+    #    shutil.rmtree(result_path)
+    #else:
+    #  os.makedirs(result_path)
 
     save_path = os.path.join(args.dataset,args.save_path)
     train_subjects_list = training_ids
@@ -99,25 +104,45 @@ def test(args, model, test_loader,epoch):
     model.load_state_dict(torch.load(os.path.join(save_path, '{}_model.pth'.format(epoch))))
     model = model.to(device)
     model.eval()
+    print("here")
+    
+    pbar = tqdm(enumerate(test_loader),total=len(test_loader))
    
-    for audio, vertice, template, one_hot_all, file_name in test_loader:
+    for i, (audio, vertice, template, one_hot_all, file_name) in pbar:
+      if i < len(pbar)//120:
         # to gpu
         audio, vertice, template, one_hot_all= audio.to(device), vertice.to(device), template.to(device), one_hot_all.to(device)
-        train_subject = file_name[0].split("_")[0]
-        if train_subject in train_subjects_list:
-            condition_subject = train_subject
-            iter = train_subjects_list.index(condition_subject)
-            one_hot = one_hot_all[:,iter,:]
-            prediction = model.predict(audio, template, one_hot)
-            prediction = prediction.squeeze() # (seq_len, V*3)
-            np.save(os.path.join(result_path, file_name[0].split(".")[0]+"_condition_"+condition_subject+".npy"), prediction.detach().cpu().numpy())
-        else:
-            for iter in range(one_hot_all.shape[-1]):
-                condition_subject = train_subjects_list[iter]
-                one_hot = one_hot_all[:,iter,:]
-                prediction = model.predict(audio, template, one_hot)
-                prediction = prediction.squeeze() # (seq_len, V*3)
-                np.save(os.path.join(result_path, file_name[0].split(".")[0]+"_condition_"+condition_subject+".npy"), prediction.detach().cpu().numpy())
+        # train_subject = file_name[0].split("_")[0]
+        # if train_subject in train_subjects_list:
+        #     condition_subject = train_subject
+        #     iter = train_subjects_list.index(condition_subject)
+        #     one_hot = one_hot_all[:,iter,:]
+        #     prediction = model.predict(audio, template, one_hot)
+        #     prediction = prediction.squeeze() # (seq_len, V*3)
+        #     np.save(os.path.join(result_path, file_name[0].split(".")[0]+"_condition_"+condition_subject+".npy"), prediction.detach().cpu().numpy())
+        # else:
+        #     for iter in range(one_hot_all.shape[-1]):
+        #         condition_subject = train_subjects_list[iter]
+        #         one_hot = one_hot_all[:,iter,:]
+        #         prediction = model.predict(audio, template, one_hot)
+        #         prediction = prediction.squeeze() # (seq_len, V*3)
+        #         np.save(os.path.join(result_path, file_name[0].split(".")[0]+"_condition_"+condition_subject+".npy"), prediction.detach().cpu().numpy())
+        condition_subject = "M003"
+        one_hot = one_hot_all[:,0,:]
+        prediction = model.predict(audio, template, one_hot, 1)
+        
+        print("before")
+        print(prediction.shape)
+        print(prediction)
+        
+        prediction = prediction.squeeze()
+        
+        print(prediction.shape)
+        print(prediction)
+        
+        print(file_name[0].split(".")[0])
+        np.save(os.path.join(result_path, file_name[0].split(".")[0]+"_condition_"+condition_subject+".npy"), prediction.detach().cpu().numpy())
+        
          
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -148,20 +173,20 @@ def main():
     parser.add_argument("--batch_size", type=int, default=1)
     args = parser.parse_args()
 
-    wandb.init(project='FaceFormer', entity='mesh_talk')
-    wandb.config = {"learning_rate: 0.001"}
+#    wandb.init(project='FaceFormer', entity='mesh_talk')
+#    wandb.config = {"learning_rate: 0.001"}
 
     #build model
     model = Faceformer(args)
-    print("model parameters: ", count_parameters(model))
+#    print("model parameters: ", count_parameters(model))
 
     # to cuda
-    assert torch.cuda.is_available()
+#    assert torch.cuda.is_available()
     model = model.to(device)
     
-    device_count = torch.cuda.device_count()
+#    device_count = torch.cuda.device_count()
     
-    model = model.to(device)
+#    model = model.to(device)
     
     #load data
     #dataset = get_dataloaders(args)
@@ -217,21 +242,24 @@ def main():
         with open(test_data_path, 'wb') as file:
           pickle.dump(test_data, file)
         
-    dataset = get_dataloaders_pkl(train_data, valid_data, test_data, args.batch_size)
+    #dataset = get_dataloaders_pkl(train_data, valid_data, test_data, args.batch_size)
+    dataset = get_dataloaders_pkl(train_data, valid_data, test_data, 1)
     
     # loss
-    criterion = nn.MSELoss()
+#    criterion = nn.MSELoss()
 
     # Train the model
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad,model.parameters()), lr=args.lr)
+#    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad,model.parameters()), lr=args.lr)
     
-    wandb.watch(model, criterion, log="all", log_freq=10)
+#    wandb.watch(model, criterion, log="all", log_freq=10)
     
-    model = trainer(args, dataset["train"], dataset["valid"],model, optimizer, criterion, epoch=args.max_epoch)
+#    model = trainer(args, dataset["train"], dataset["valid"],model, optimizer, criterion, epoch=args.max_epoch)
     #model = trainer(args, dataset["train"], dataset["valid"],model, optimizer, criterion, epoch=10)
     
     #test(args, model, dataset["test"], epoch=args.max_epoch)
-    wandb.finish()
+    test(args, model, dataset["valid"], epoch=9-1)
+    #test(args, model, dataset["valid"], epoch=4-1)
+#    wandb.finish()
     
 if __name__=="__main__":
     main()

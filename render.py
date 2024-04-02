@@ -23,21 +23,38 @@ import pyrender
 import trimesh
 from psbody.mesh import Mesh
 
+EMOTION_DICT = {'neutral': 1, 'happy': 2, 'sad': 3, 'surprised': 4, 'fear': 5, 'disgusted': 6, 'angry': 7, 'contempt': 8, 'calm' : 9}
+
 # The implementation of rendering is borrowed from VOCA: https://github.com/TimoBolkart/voca/blob/master/utils/rendering.py
 def render_mesh_helper(args,mesh, t_center, rot=np.zeros(3), tex_img=None,  z_offset=0):
     if args.dataset == "BIWI":
         camera_params = {'c': np.array([400, 400]),
                          'k': np.array([-0.19816071, 0.92822711, 0, 0, 0]),
                          'f': np.array([4754.97941935 / 8, 4754.97941935 / 8])}
-    elif args.dataset == "vocaset":
+    elif args.dataset == "vocaset" or args.dataset == "MEAD":
         camera_params = {'c': np.array([400, 400]),
                          'k': np.array([-0.19816071, 0.92822711, 0, 0, 0]),
                          'f': np.array([4754.97941935 / 2, 4754.97941935 / 2])}
 
     frustum = {'near': 0.01, 'far': 3.0, 'height': 800, 'width': 800}
-
+    
+    print("mesh.v")
+    print(mesh)
+    
     mesh_copy = Mesh(mesh.v, mesh.f)
+    
+    print("debug")
+    print(mesh_copy.v)
+    
     mesh_copy.v[:] = cv2.Rodrigues(rot)[0].dot((mesh_copy.v-t_center).T).T+t_center
+    
+    print("rodri")
+    print(cv2.Rodrigues(rot))
+    
+    print("mesh_copy.v")
+    print(mesh_copy.v)
+    print("mesh_copy.f")
+    print(mesh_copy.f)
     
     intensity = 2.0
     rgb_per_v = None
@@ -112,18 +129,45 @@ def render_sequence_meshes(args,sequence_vertices, template, out_path,predicted_
 
     center = np.mean(sequence_vertices[0], axis=0)
     video_fname_pred = os.path.join(out_path, file_name_pred+'.mp4')
+    
+    print("num frames")
+    print(num_frames)
+    
     for i_frame in range(num_frames):
+        print("i_frame")
+        print(i_frame)
+        print("template.f")
+        print(template.f)
+        print("seq vert")
+        print(sequence_vertices[i_frame])
         render_mesh = Mesh(sequence_vertices[i_frame], template.f)
         if vt is not None and ft is not None:
             render_mesh.vt, render_mesh.ft = vt, ft
+        print("render mesh")
+        print(render_mesh)
         pred_img = render_mesh_helper(args,render_mesh, center, tex_img=tex_img)
         pred_img = pred_img.astype(np.uint8)
         img = pred_img
         writer_pred.write(img)
 
     writer_pred.release()
-    cmd = ('ffmpeg' + ' -i {0} -pix_fmt yuv420p -qscale 0 {1}'.format(
-       tmp_video_file_pred.name, video_fname_pred)).split()
+    
+    
+    actor_name = file_name_pred.split('_')[0]
+    emotion_num = int(file_name_pred.split('_')[1])
+    for key, value in EMOTION_DICT.items():
+          if value == emotion_num:
+            emotion_str = key
+            break
+    level_str = "level_" + file_name_pred.split('_')[2]
+    audio_file_name = file_name_pred.split('_')[3] + ".wav"
+    base_path = "/home/MIR_LAB/MEAD/audio"
+    audio_path = os.path.join(base_path, actor_name, "video", "front", emotion_str, level_str, audio_file_name)
+    
+    
+    #cmd = ('ffmpeg' + ' -i {0} -pix_fmt yuv420p -qscale 0 {1}'.format(
+    #   tmp_video_file_pred.name, video_fname_pred)).split()
+    cmd = ('ffmpeg' + ' -i {0} -i {1} -pix_fmt yuv420p -qscale 0 -vcodec copy -acodec aac {2} '.format(tmp_video_file_pred.name, audio_path, video_fname_pred)).split()
     call(cmd)
 
 def main():
@@ -138,18 +182,22 @@ def main():
     args = parser.parse_args()
 
     pred_path = os.path.join(args.dataset,args.pred_path)
-    output_path = os.path.join(args.dataset,args.output)
-    if os.path.exists(output_path):
-        shutil.rmtree(output_path)
-    os.makedirs(output_path)
+    output_path = os.path.join("/home/smsm0307/FaceFormer-main", args.dataset,args.output)
+    #if os.path.exists(output_path):
+    #    shutil.rmtree(output_path)
+    #else:
+    #    os.makedirs(output_path)
     
     for file in os.listdir(pred_path):
+        print(file)
         if file.endswith("npy"):
             predicted_vertices_path = os.path.join(pred_path,file)
             if args.dataset == "BIWI":
                 template_file = os.path.join(args.dataset, args.render_template_path, "BIWI.ply")
             elif args.dataset == "vocaset":
                 template_file = os.path.join(args.dataset, args.render_template_path, "FLAME_sample.ply")
+            elif args.dataset == "MEAD":
+                template_file = os.path.join("render", "FLAME_sample.ply")
             print("rendering: ", file)
         
             template = Mesh(filename=template_file)
@@ -158,7 +206,10 @@ def main():
 
             predicted_vertices = np.load(predicted_vertices_path)
             predicted_vertices = np.reshape(predicted_vertices,(-1,args.vertice_dim//3,3))
-
+            
+            print(predicted_vertices.shape)
+            print(predicted_vertices[0])
+            
             render_sequence_meshes(args,predicted_vertices, template, output_path,predicted_vertices_path,vt, ft ,tex_img)
 
 if __name__=="__main__":
